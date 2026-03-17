@@ -426,15 +426,16 @@
         
         .charts-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
             gap: 20px;
             margin-top: 20px;
         }
-        
+
         .chart-card {
             background: rgba(255,255,255,0.03);
             border-radius: 12px;
             padding: 20px;
+            min-height: 240px;
         }
         
         .chart-title { font-size: 12px; margin-bottom: 15px; color: #888; }
@@ -745,19 +746,19 @@
             
             <div class="charts-grid">
                 <div class="chart-card">
-                    <div class="chart-title">Status por Horímetro</div>
+                    <div class="chart-title">Status por Horímetro (Clientes Ativos)</div>
                     <canvas id="status-chart" height="180"></canvas>
                 </div>
                 <div class="chart-card">
-                    <div class="chart-title">Gatilho Preventivas</div>
+                    <div class="chart-title">Gatilho Preventivas (Clientes Ativos)</div>
                     <canvas id="gatilho-chart" height="180"></canvas>
                 </div>
                 <div class="chart-card">
-                    <div class="chart-title">Por Tipo de Óleo</div>
+                    <div class="chart-title">Por Tipo de Óleo (Clientes Ativos)</div>
                     <canvas id="oleo-chart" height="180"></canvas>
                 </div>
                 <div class="chart-card">
-                    <div class="chart-title">Clientes</div>
+                    <div class="chart-title">Top 10 Clientes Ativos (por Equipamentos)</div>
                     <canvas id="clientes-chart" height="180"></canvas>
                 </div>
             </div>
@@ -1149,6 +1150,10 @@
                     <div class="import-option">
                         <input type="radio" id="import-incremental" name="import-mode" value="incremental" checked>
                         <label for="import-incremental">➕ <strong>Incremental</strong> - Adiciona novos registros sem sobrescrever</label>
+                    </div>
+                    <div class="import-option">
+                        <input type="radio" id="import-atualizar" name="import-mode" value="atualizar">
+                        <label for="import-atualizar">🔃 <strong>Atualizar</strong> - Atualiza dados técnicos (horímetro, horas) sem alterar OS Nº, Data, Série e Cliente</label>
                     </div>
                     <div class="import-option">
                         <input type="radio" id="import-replace" name="import-mode" value="replace">
@@ -2276,8 +2281,12 @@
         
         function importarDados(novosRegistros) {
             const modo = getImportMode();
-            let novos = 0, duplicados = 0;
-            
+            let novos = 0, duplicados = 0, atualizados = 0;
+
+            // Salvar regime padrão antes da importação para preservar
+            const regimeBackup = JSON.parse(JSON.stringify(clienteRegimePadrao));
+            const tipoOleoClienteBackup = JSON.parse(JSON.stringify(clienteTipoOleo));
+
             if (modo === 'replace') {
                 // Substituir tudo - COM CONFIRMAÇÃO
                 if (osData.length > 0 && !confirm(`⚠️ ATENÇÃO: Isso irá APAGAR ${osData.length} registros existentes e substituir por ${novosRegistros.length} novos registros.\n\nUm backup automático será salvo antes.\n\nDeseja continuar?`)) {
@@ -2293,10 +2302,47 @@
                 }
                 osData = novosRegistros;
                 novos = novosRegistros.length;
+            } else if (modo === 'atualizar') {
+                // ATUALIZAR: atualiza apenas dados técnicos, preserva campos gerais da OS
+                const chavesMap = {};
+                osData.forEach((r, idx) => { chavesMap[gerarChaveUnica(r)] = idx; });
+
+                novosRegistros.forEach(r => {
+                    const chave = gerarChaveUnica(r);
+                    if (chavesMap[chave] !== undefined) {
+                        // Registro existente: atualizar APENAS campos técnicos
+                        const existente = osData[chavesMap[chave]];
+                        // Preservar campos gerais: osNum, cliente, dataOS, serie ficam inalterados
+                        // Atualizar apenas campos técnicos/medição
+                        if (r.horTotal !== null) existente.horTotal = r.horTotal;
+                        if (r.hsOleo !== null) existente.hsOleo = r.hsOleo;
+                        if (r.hsFiltroAr !== null) existente.hsFiltroAr = r.hsFiltroAr;
+                        if (r.hsFiltroOleo !== null) existente.hsFiltroOleo = r.hsFiltroOleo;
+                        if (r.hsElemSep !== null) existente.hsElemSep = r.hsElemSep;
+                        if (r.hsGraxa !== null) existente.hsGraxa = r.hsGraxa;
+                        if (r.hsCoalescente !== null) existente.hsCoalescente = r.hsCoalescente;
+                        if (r.temp !== null) existente.temp = r.temp;
+                        if (r.pressao !== null) existente.pressao = r.pressao;
+                        if (r.diasSem !== null) existente.diasSem = r.diasSem;
+                        if (r.hsDia !== null) existente.hsDia = r.hsDia;
+                        // Atualizar técnico, motivo e status se informados
+                        if (r.tecnico) existente.tecnico = r.tecnico;
+                        if (r.motivo) existente.motivo = r.motivo;
+                        if (r.status) existente.status = r.status;
+                        // Modelo pode ser atualizado se informado (não é campo "geral" da OS)
+                        if (r.modelo) existente.modelo = r.modelo;
+                        atualizados++;
+                    } else {
+                        // Registro novo: adicionar
+                        osData.push(r);
+                        chavesMap[chave] = osData.length - 1;
+                        novos++;
+                    }
+                });
             } else {
                 // Incremental: adicionar apenas novos
                 const chavesExistentes = new Set(osData.map(r => gerarChaveUnica(r)));
-                
+
                 novosRegistros.forEach(r => {
                     const chave = gerarChaveUnica(r);
                     if (!chavesExistentes.has(chave)) {
@@ -2308,7 +2354,7 @@
                     }
                 });
             }
-            
+
             // Ordenar por data (mais recente primeiro)
             osData.sort((a, b) => {
                 if (!a.dataOS && !b.dataOS) return (a.serie || '').localeCompare(b.serie || '');
@@ -2318,22 +2364,39 @@
                 if (dataDiff !== 0) return dataDiff;
                 return (a.serie || '').localeCompare(b.serie || '');
             });
-            
+
             processData();
+
+            // Restaurar regime padrão e tipo óleo do cliente (nunca sobrescrever pela importação)
+            Object.keys(regimeBackup).forEach(cliente => {
+                if (!clienteRegimePadrao[cliente]) {
+                    clienteRegimePadrao[cliente] = regimeBackup[cliente];
+                }
+            });
+            Object.keys(tipoOleoClienteBackup).forEach(cliente => {
+                if (!clienteTipoOleo[cliente]) {
+                    clienteTipoOleo[cliente] = tipoOleoClienteBackup[cliente];
+                }
+            });
+            safeSetItem('luat_cliente_regime', JSON.stringify(clienteRegimePadrao));
+            safeSetItem('luat_cliente_tipos_v3', JSON.stringify(clienteTipoOleo));
+
             saveToStorage();
-            
+
             // Mostrar estatísticas
             document.getElementById('import-stats').style.display = 'grid';
             document.getElementById('stat-total').textContent = novosRegistros.length;
             document.getElementById('stat-novos').textContent = novos;
-            document.getElementById('stat-duplicados').textContent = duplicados;
+            document.getElementById('stat-duplicados').textContent = duplicados + (atualizados > 0 ? ' | ' + atualizados + ' atualizados' : '');
             document.getElementById('stat-base').textContent = osData.length;
-            
+
             if (novos > 0) {
                 showSuccess(`✅ ${novos} novos registros adicionados!`);
-                
-                // AUTO-SYNC: Enviar para Supabase automaticamente
                 autoSyncAfterImport();
+            }
+            if (atualizados > 0) {
+                showSuccess(`🔃 ${atualizados} registros atualizados (dados técnicos)!`);
+                if (novos === 0) autoSyncAfterImport();
             }
             if (duplicados > 0) {
                 showWarning(`⚠️ ${duplicados} registros ignorados (já existentes)`);
@@ -2698,8 +2761,11 @@
         }
 
         function renderCharts() {
+            // Filtrar apenas equipamentos de clientes ATIVOS para gráficos relevantes
+            const eqAtivos = equipamentos.filter(e => !e.clienteInativo);
+
             let verde = 0, amarelo = 0, laranja = 0, vermelho = 0;
-            equipamentos.forEach(e => {
+            eqAtivos.forEach(e => {
                 const h = e.horTotal || 0;
                 if (h >= CONFIG.HORIMETRO.VERMELHO) vermelho++;
                 else if (h >= CONFIG.HORIMETRO.LARANJA) laranja++;
@@ -2707,36 +2773,46 @@
                 else verde++;
             });
             createDoughnut('status-chart',
-                ['OK', 'Atenção', 'Alerta', 'Crítico'],
+                ['OK (' + verde + ')', 'Atenção (' + amarelo + ')', 'Alerta (' + laranja + ')', 'Crítico (' + vermelho + ')'],
                 [verde, amarelo, laranja, vermelho],
                 ['#27ae60', '#f1c40f', '#f39c12', '#e74c3c']
             );
 
-            const gatilhoHoras = equipamentos.filter(e => e.preventiva?.gatilho === 'horas').length;
-            const gatilhoAnual = equipamentos.filter(e => e.preventiva?.gatilho === 'anual').length;
-            const semGatilho = equipamentos.filter(e => !e.preventiva?.gatilho).length;
+            const gatilhoHoras = eqAtivos.filter(e => e.preventiva?.gatilho === 'horas').length;
+            const gatilhoAnual = eqAtivos.filter(e => e.preventiva?.gatilho === 'anual').length;
+            const semGatilho = eqAtivos.filter(e => !e.preventiva?.gatilho).length;
             createDoughnut('gatilho-chart',
-                ['Horas', 'Anual', 'Sem dados'],
+                ['Horas (' + gatilhoHoras + ')', 'Anual (' + gatilhoAnual + ')', 'Sem dados (' + semGatilho + ')'],
                 [gatilhoHoras, gatilhoAnual, semGatilho],
                 ['#9b59b6', '#3498db', '#7f8c8d']
             );
 
-            const mineral = equipamentos.filter(e => e.tipoOleo === 'mineral').length;
-            const semi = equipamentos.filter(e => e.tipoOleo === 'semi').length;
-            const sintetico = equipamentos.filter(e => e.tipoOleo === 'sintetico').length;
+            const mineral = eqAtivos.filter(e => e.tipoOleo === 'mineral').length;
+            const semi = eqAtivos.filter(e => e.tipoOleo === 'semi').length;
+            const sintetico = eqAtivos.filter(e => e.tipoOleo === 'sintetico').length;
             createDoughnut('oleo-chart',
-                ['Mineral', 'Semi-Sint.', 'Sintético'],
+                ['Mineral (' + mineral + ')', 'Semi-Sint. (' + semi + ')', 'Sintético (' + sintetico + ')'],
                 [mineral, semi, sintetico],
                 ['#e74c3c', '#f39c12', '#27ae60']
             );
 
-            const ativos = clientesData.filter(c => !c.inativo).length;
-            const inativos = clientesData.filter(c => c.inativo).length;
-            createDoughnut('clientes-chart',
-                ['Ativos', 'Inativos'],
-                [ativos, inativos],
-                ['#27ae60', '#95a5a6']
-            );
+            // Gráfico Clientes: Top 10 clientes ativos por qtd de equipamentos
+            const clientesAtivosOrdenados = clientesData
+                .filter(c => !c.inativo)
+                .sort((a, b) => b.equipamentos - a.equipamentos)
+                .slice(0, 10);
+
+            if (clientesAtivosOrdenados.length > 0) {
+                const cLabels = clientesAtivosOrdenados.map(c => {
+                    const nome = c.nome.length > 18 ? c.nome.substring(0, 18) + '…' : c.nome;
+                    return nome + ' (' + c.equipamentos + ')';
+                });
+                const cData = clientesAtivosOrdenados.map(c => c.equipamentos);
+                const cColors = ['#3498db', '#e94560', '#27ae60', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#2ecc71', '#e74c3c', '#34495e'];
+                createDoughnut('clientes-chart', cLabels, cData, cColors.slice(0, cData.length));
+            } else {
+                createDoughnut('clientes-chart', ['Sem dados'], [1], ['#7f8c8d']);
+            }
         }
         
         // ==================== TABELAS (renderização simplificada para caber no arquivo) ====================
